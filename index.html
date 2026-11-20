@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>İddaa Kupon Analizi</title>
+<style>
+:root {
+  --bg:#f6f7f9; --surface:#ffffff; --text:#1a1d21; --muted:#6b7280;
+  --border:#dfe3e8; --accent:#2563eb; --good:#15803d; --bad:#b91c1c;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:#0f1115; --surface:#181b21; --text:#e8eaed; --muted:#9aa1ac;
+    --border:#2a2f38; --accent:#60a5fa; --good:#4ade80; --bad:#f87171;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+main { max-width: 540px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.35rem; margin: 6px 0 14px; }
+h2 { font-size: 1.05rem; margin: 22px 0 10px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px; margin-bottom: 12px;
+}
+.row {
+  display: grid; grid-template-columns: 64px repeat(3, 1fr);
+  gap: 6px; align-items: center; margin-bottom: 6px;
+}
+.lbl { font-size: .82rem; color: var(--muted); }
+.lbl.c { text-align: center; }
+input[type=number], input[type=text], select {
+  width: 100%; padding: 9px 8px; font-size: 16px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); min-width: 0;
+}
+.name-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.name-row input { flex: 1; }
+.pick label { display: flex; align-items: center; justify-content: center; gap: 4px; font-size: .95rem; }
+button {
+  font: inherit; padding: 11px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); cursor: pointer;
+}
+button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.actions .primary { grid-column: 1 / -1; }
+.remove { color: var(--bad); border: none; background: none; padding: 6px 8px; font-size: 1rem; }
+.picker { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.picker .lg { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.status { font-size: .85rem; color: var(--muted); margin-top: 6px; }
+.errors { color: var(--bad); font-size: .9rem; margin: 10px 0; padding-left: 18px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th, td { padding: 8px 4px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+th.n, td.n { text-align: right; }
+.pos { color: var(--good); font-weight: 600; }
+.neg { color: var(--bad); font-weight: 600; }
+.summary { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.summary div { display: flex; justify-content: space-between; padding: 4px 0; }
+.note { font-size: .8rem; color: var(--muted); margin-top: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>İddaa Kupon Analizi</h1>
+
+  <div class="picker">
+    <div class="lg">
+      <select id="ligSelect"><option value="">Lig yükleniyor...</option></select>
+      <select id="macSelect" disabled><option value="">Önce lig seçin</option></select>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="actions" style="margin:10px 0 0">
+      <button id="addFromMacBtn" type="button" class="primary" disabled>Seçili maçı kupona ekle</button>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="addBtn" type="button">+ Boş maç ekle</button>
+    <button id="analyzeBtn" type="button">Analiz et</button>
+  </div>
+
+  <div id="matches"></div>
+  <div id="result"></div>
+
+  <p class="note">
+    Bu araç kesin tahmin vermez. Model yüzdeleri Football Charts'tan gelir ve siz değiştirebilirsiniz.
+    Oranları iddaa kuponundan siz girersiniz. Sorumlu oynayın. 18 yaş altı kullanamaz.
+  </p>
+</main>
+
+<script>
+const OUT = ['1', 'X', '2'];
+const matchesEl = document.getElementById('matches');
+const resultEl = document.getElementById('result');
+const ligSelect = document.getElementById('ligSelect');
+const macSelect = document.getElementById('macSelect');
+const addFromMacBtn = document.getElementById('addFromMacBtn');
+const statusEl = document.getElementById('status');
+let counter = 0;
+let fixtures = [];
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function pct(v) {
+  return (v * 100).toLocaleString('tr-TR', { maximumFractionDigits: 1 }) + '%';
+}
+function signedPct(v) {
+  return (v >= 0 ? '+' : '') + pct(v);
+}
+
+async function loadLeagues() {
+  try {
+    const r = await fetch('/api/leagues');
+    const data = await r.json();
+    ligSelect.innerHTML = '<option value="">Lig seçin</option>' +
+      data.leagues.map(l => `<option value="${esc(l.league)}">${esc(l.country)} - ${esc(l.name)}</option>`).join('');
+    statusEl.textContent = '';
+  } catch (e) {
+    ligSelect.innerHTML = '<option value="">Ligler yüklenemedi</option>';
+    statusEl.textContent = 'Sunucuya ulaşılamadı. Sayfayı yenileyin.';
+  }
+}
+
+async function loadFixtures(lig) {
+  macSelect.disabled = true;
+  macSelect.innerHTML = '<option>Maçlar yükleniyor...</option>';
+  addFromMacBtn.disabled = true;
+  try {
+    const r = await fetch(`/api/fixtures/${encodeURIComponent(lig)}`);
+    fixtures = await r.json();
+    macSelect.innerHTML = '<option value="">Maç seçin</option>' +
+      fixtures.map((f, i) => `<option value="${i}">${esc(f.tarih)} · ${esc(f.mac)}</option>`).join('');
+    macSelect.disabled = fixtures.length === 0;
+    statusEl.textContent = fixtures.length ? `${fixtures.length} maç bulundu.` : 'Bu ligde yakın maç yok.';
+  } catch (e) {
+    macSelect.innerHTML = '<option value="">Maçlar yüklenemedi</option>';
+    statusEl.textContent = 'Maçlar yüklenemedi.';
+  }
+}
+
+ligSelect.addEventListener('change', () => { if (ligSelect.value) loadFixtures(ligSelect.value); });
+macSelect.addEventListener('change', () => { addFromMacBtn.disabled = macSelect.value === ''; });
+addFromMacBtn.addEventListener('click', () => {
+  const f = fixtures[macSelect.value];
+  if (!f) return;
+  addMatch({ name: f.mac, model: f.model });
+});
+
+function addMatch(data) {
+  const id = ++counter;
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="name-row">
+      <input type="text" class="name" placeholder="Maç" value="${esc(data && data.name ? data.name : '')}">
+      <button type="button" class="remove" aria-label="Maçı sil">✕</button>
+    </div>
+    <div class="row">
+      <span class="lbl"></span>
+      ${OUT.map(o => `<span class="lbl c">${o}</span>`).join('')}
+    </div>
+    <div class="row">
+      <span class="lbl">Oran</span>
+      ${OUT.map(o => `<input type="number" class="odds" data-o="${o}" step="0.01" min="1" inputmode="decimal">`).join('')}
+    </div>
+    <div class="row">
+      <span class="lbl">Model %</span>
+      ${OUT.map(o => `<input type="number" class="model" data-o="${o}" step="0.1" min="0" max="100" inputmode="decimal">`).join('')}
+    </div>
+    <div class="row pick">
+      <span class="lbl">Seçim</span>
+      ${OUT.map(o => `<label><input type="radio" name="pick${id}" value="${o}">${o}</label>`).join('')}
+    </div>`;
+
+  if (data && data.model) {
+    OUT.forEach(o => {
+      card.querySelector(`.model[data-o="${o}"]`).value = (data.model[o] * 100).toFixed(1);
+    });
+  }
+  matchesEl.appendChild(card);
+}
+
+matchesEl.addEventListener('click', e => {
+  if (e.target.classList.contains('remove')) e.target.closest('.card').remove();
+});
+
+function analyze() {
+  const cards = [...matchesEl.querySelectorAll('.card')];
+  const errors = [];
+  const matches = [];
+
+  if (cards.length === 0) {
+    resultEl.innerHTML = '<p class="errors">Önce en az bir maç ekleyin.</p>';
+    return;
+  }
+
+  cards.forEach((c, i) => {
+    const name = c.querySelector('.name').value.trim() || `Maç ${i + 1}`;
+    const odds = {}, model = {};
+    c.querySelectorAll('.odds').forEach(inp => odds[inp.dataset.o] = parseFloat(inp.value));
+    c.querySelectorAll('.model').forEach(inp => model[inp.dataset.o] = parseFloat(inp.value) / 100);
+    const pick = c.querySelector('input[type=radio]:checked')?.value;
+
+    if (OUT.some(o => !(odds[o] > 1))) {
+      errors.push(`${name}: tüm oranları girin (1'den büyük olmalı).`);
+      return;
+    }
+    if (OUT.some(o => isNaN(model[o]))) {
+      errors.push(`${name}: tüm model yüzdelerini girin.`);
+      return;
+    }
+    const sum = OUT.reduce((s, o) => s + model[o], 0);
+    if (Math.abs(sum - 1) > 0.02) {
+      errors.push(`${name}: model yüzdelerinin toplamı 100 olmalı (şu an ${(sum * 100).toFixed(1)}).`);
+      return;
+    }
+    if (!pick) {
+      errors.push(`${name}: bir seçim işaretleyin.`);
+      return;
+    }
+    matches.push({ name, odds, model, pick });
+  });
+
+  if (errors.length) {
+    resultEl.innerHTML = `<ul class="errors">${errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul>`;
+    return;
+  }
+
+  let totalOdds = 1, totalProb = 1;
+  const rows = matches.map(m => {
+    const implied = OUT.map(o => 1 / m.odds[o]);
+    const tot = implied.reduce((a, b) => a + b, 0);
+    const marj = tot - 1;
+    const piyasa = (1 / m.odds[m.pick]) / tot;
+    const oran = m.odds[m.pick];
+    const p = m.model[m.pick];
+    const deger = p * oran - 1;
+    totalOdds *= oran;
+    totalProb *= p;
+    return { ...m, oran, p, piyasa, marj, deger };
+  });
+
+  const comboEV = totalProb * totalOdds - 1;
+
+  resultEl.innerHTML = `
+    <h2>Maç bazında</h2>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Maç</th><th>Seçim</th><th class="n">Oran</th><th class="n">Piyasa</th><th class="n">Model</th><th class="n">Değer</th></tr>
+        ${rows.map(r => `
+          <tr>
+            <td>${esc(r.name)}<br><span class="lbl">marj ${pct(r.marj)}</span></td>
+            <td>${r.pick}</td>
+            <td class="n">${r.oran.toFixed(2)}</td>
+            <td class="n">${pct(r.piyasa)}</td>
+            <td class="n">${pct(r.p)}</td>
+            <td class="n ${r.deger >= 0 ? 'pos' : 'neg'}">${signedPct(r.deger)}</td>
+          </tr>`).join('')}
+      </table>
+    </div>
+
+    <h2>Kupon</h2>
+    <div class="summary">
+      <div><span>Toplam oran</span><strong>${totalOdds.toFixed(2)}</strong></div>
+      <div><span>Modele göre tutma olasılığı</span><strong>${pct(totalProb)}</strong></div>
+      <div><span>Kupon beklenen değeri</span><strong class="${comboEV >= 0 ? 'pos' : 'neg'}">${signedPct(comboEV)}</strong></div>
+    </div>
+    <p class="note">Değer: model olasılığı × oran − 1. Pozitif değer, modelin oranı fazla bulduğu anlamına gelir.</p>`;
+}
+
+document.getElementById('addBtn').addEventListener('click', () => addMatch());
+document.getElementById('analyzeBtn').addEventListener('click', analyze);
+
+loadLeagues();
+</script>
+</body>
+</html>
